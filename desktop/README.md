@@ -30,7 +30,7 @@ open 'desktop/dist/林序下载器.app'
 
 ## 开发
 
-- `DownloadApp.swift`：原生 SwiftUI 深色窗口、批量下载队列、进度和历史记录。
+- `DownloadApp.swift`：原生 SwiftUI 浅色窗口、批量下载队列、进度和历史记录。
 - `worker.py`：链接清洗（`extract_urls`）、参数校验、JSON 事件、yt-dlp 下载和文件检查。
 - `douyin.js`：Ego Lite 浏览器读取及抖音文件下载。配置随脚本注入，不经过浏览器服务的环境变量（那里的 env 是常驻的，会在批量下载时串任务）。`keepSpace` 开启时下载成功后保留任务空间（发出 `spaceKept` 事件）供队列中下一条抖音复用；应用侧在队列排空、全部取消或退出时通过 `worker.py --close-space <id>` 统一关闭。被用户接管（handOff）的空间绝不再复用。
 - `make_icon.swift`：生成应用图标，由 `build.sh` 调用。

@@ -427,17 +427,17 @@ final class DownloadModel: ObservableObject {
 
 // MARK: - Palette
 
-private let bg = Color(red: 0.047, green: 0.055, blue: 0.078)
-private let sidebarBg = Color(red: 0.035, green: 0.042, blue: 0.062)
-private let card = Color.white.opacity(0.05)
-private let cardBorder = Color.white.opacity(0.09)
-private let ink = Color.white.opacity(0.93)
-private let quiet = Color.white.opacity(0.48)
-private let teal = Color(red: 0.18, green: 0.83, blue: 0.75)
-private let sky = Color(red: 0.24, green: 0.72, blue: 0.98)
-private let mint = Color(red: 0.33, green: 0.86, blue: 0.56)
-private let warn = Color(red: 0.98, green: 0.66, blue: 0.27)
-private let danger = Color(red: 0.97, green: 0.44, blue: 0.44)
+private let bg = Color(red: 0.969, green: 0.976, blue: 0.984)
+private let sidebarBg = Color(red: 0.943, green: 0.955, blue: 0.963)
+private let card = Color.white
+private let cardBorder = Color.black.opacity(0.07)
+private let ink = Color(red: 0.11, green: 0.14, blue: 0.18)
+private let quiet = Color(red: 0.44, green: 0.49, blue: 0.54)
+private let teal = Color(red: 0.02, green: 0.60, blue: 0.55)
+private let sky = Color(red: 0.06, green: 0.55, blue: 0.91)
+private let mint = Color(red: 0.05, green: 0.62, blue: 0.32)
+private let warn = Color(red: 0.83, green: 0.45, blue: 0.04)
+private let danger = Color(red: 0.86, green: 0.24, blue: 0.20)
 private let accent = LinearGradient(colors: [teal, sky], startPoint: .leading, endPoint: .trailing)
 private let accentTile = LinearGradient(colors: [teal, sky], startPoint: .topLeading, endPoint: .bottomTrailing)
 
@@ -479,7 +479,8 @@ struct DownloadWindow: View {
         }
         .foregroundColor(ink)
         .frame(minWidth: 960, minHeight: 700)
-        .preferredColorScheme(.dark)
+        .preferredColorScheme(.light)
+        .tint(teal)
         .onAppear {
             NSApp.activate(ignoringOtherApps: true)
             // Headless smoke test: --auto-start (with --ui-test input) drives the real queue.
@@ -495,7 +496,7 @@ struct DownloadWindow: View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 11) {
                 Image(systemName: "arrow.down.to.line.compact")
-                    .font(.system(size: 18, weight: .bold)).foregroundColor(bg)
+                    .font(.system(size: 18, weight: .bold)).foregroundColor(.white)
                     .frame(width: 38, height: 38)
                     .background(accentTile, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                     .shadow(color: teal.opacity(0.35), radius: 10, y: 3)
@@ -615,7 +616,7 @@ struct DownloadWindow: View {
                     .onChange(of: model.input) { _ in model.parseHint = nil }
             }
             .padding(10)
-            .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .background(Color.black.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(linkFocused ? teal.opacity(0.55) : cardBorder, lineWidth: 1))
             if let hint = model.parseHint {
@@ -631,7 +632,7 @@ struct DownloadWindow: View {
                             .font(.system(size: 11)).foregroundColor(quiet)
                     } else {
                         Text("已识别 \(model.detected.count) 个链接")
-                            .font(.system(size: 11, weight: .bold)).foregroundColor(bg)
+                            .font(.system(size: 11, weight: .bold)).foregroundColor(.white)
                             .padding(.horizontal, 9).padding(.vertical, 4)
                             .background(accent, in: Capsule())
                         Text(LinkParser.hostSummary(model.detected))
@@ -694,9 +695,10 @@ struct DownloadWindow: View {
                     Image(systemName: model.isBusy ? "text.append" : "arrow.down.to.line")
                     Text(startLabel)
                 }
-                .font(.system(size: 14, weight: .semibold)).foregroundColor(bg)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(model.detected.isEmpty && !model.isBusy ? quiet : .white)
                 .frame(maxWidth: .infinity).frame(height: 46)
-                .background(model.detected.isEmpty && !model.isBusy ? AnyShapeStyle(Color.white.opacity(0.12)) : AnyShapeStyle(accent),
+                .background(model.detected.isEmpty && !model.isBusy ? AnyShapeStyle(Color.black.opacity(0.08)) : AnyShapeStyle(accent),
                             in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .shadow(color: model.detected.isEmpty ? .clear : teal.opacity(0.3), radius: 12, y: 4)
             }
@@ -736,7 +738,7 @@ struct DownloadWindow: View {
                 Text(model.logs.joined(separator: "\n"))
                     .font(.system(size: 10, design: .monospaced)).foregroundColor(quiet)
                     .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled).padding(9)
-            }.frame(height: 130).background(Color.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 8)).padding(.top, 8)
+            }.frame(height: 130).background(Color.black.opacity(0.05), in: RoundedRectangle(cornerRadius: 8)).padding(.top, 8)
         }.font(.system(size: 11)).foregroundColor(quiet)
     }
 }
@@ -790,7 +792,7 @@ struct QueueCard: View {
                     HStack(spacing: 12) {
                         Button { model.resume(item) } label: {
                             Label("继续下载", systemImage: "play.fill")
-                                .font(.system(size: 11, weight: .bold)).foregroundColor(bg)
+                                .font(.system(size: 11, weight: .bold)).foregroundColor(.white)
                                 .padding(.horizontal, 12).padding(.vertical, 6)
                                 .background(accent, in: Capsule())
                         }.buttonStyle(.plain)
@@ -840,7 +842,7 @@ struct QueueCard: View {
         Button(action: action) {
             Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
                 .foregroundColor(quiet).frame(width: 28, height: 28)
-                .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .background(Color.black.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }.buttonStyle(.plain).help(help)
     }
 }
@@ -853,7 +855,7 @@ struct ProgressBar: View {
     var body: some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.09))
+                Capsule().fill(Color.black.opacity(0.08))
                 if let fraction {
                     Capsule().fill(accent)
                         .frame(width: max(6, geo.size.width * CGFloat(fraction)))
