@@ -195,7 +195,8 @@ def download(args):
         # process.env, so values passed through the environment would go stale
         # between downloads. Embed the per-run config into the script instead.
         config = json.dumps({'url': url, 'output': str(output), 'quality': args.quality,
-                             'resumeSpace': args.browser_space}, ensure_ascii=False)
+                             'resumeSpace': args.browser_space,
+                             'keepSpace': args.keep_space}, ensure_ascii=False)
         script = f'const LINXU_DOWNLOAD_CONFIG = {json.dumps(config)};\n'
         script += (HERE / 'douyin.js').read_text()
         browser_error = []
@@ -232,14 +233,34 @@ def download(args):
     emit('complete', **result)
 
 
+def close_browser_space(space_id):
+    """Finish an agent-owned ego-browser task space. Best effort."""
+    browser = shutil.which('ego-browser')
+    if not browser:
+        return
+    script = f'const t=await taskSpace({int(space_id)}); await t.finish({{keep:[]}});'
+    try:
+        subprocess.run([browser, 'nodejs', '-e', script],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
+    except Exception:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--url', required=True)
-    parser.add_argument('--output', required=True)
+    parser.add_argument('--url')
+    parser.add_argument('--output')
     parser.add_argument('--quality', choices=['best', '1080', '720'], default='best')
     parser.add_argument('--chrome-cookies', action='store_true')
     parser.add_argument('--browser-space', type=int)
+    parser.add_argument('--keep-space', action='store_true')
+    parser.add_argument('--close-space', type=int)
     args = parser.parse_args()
+    if args.close_space is not None:
+        close_browser_space(args.close_space)
+        return 0
+    if not args.url or not args.output:
+        parser.error('--url 和 --output 必填')
     signal.signal(signal.SIGTERM, cancel)
     signal.signal(signal.SIGINT, cancel)
     try:
@@ -249,12 +270,7 @@ def main():
         emit('cancelled', text='下载已取消')
         if BROWSER_SPACE and not BROWSER_HANDED_OFF:
             # Close only the agent-owned task created by this download.
-            script = f'const t=await taskSpace({BROWSER_SPACE}); await t.finish({{keep:[]}});'
-            try:
-                subprocess.run([shutil.which('ego-browser'), 'nodejs', '-e', script],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=8)
-            except Exception:
-                pass
+            close_browser_space(BROWSER_SPACE)
         return 130
     except Exception as error:
         emit('error', text=str(error))

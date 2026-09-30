@@ -78,6 +78,16 @@ enum LinkParser {
     }
 }
 
+private func isDouyinURL(_ url: String) -> Bool {
+    guard let host = URL(string: url)?.host?.lowercased() else { return false }
+    return host == "douyin.com" || host.hasSuffix(".douyin.com")
+}
+
+private func isBilibiliURL(_ url: String) -> Bool {
+    guard let host = URL(string: url)?.host?.lowercased() else { return false }
+    return host == "b23.tv" || host == "bilibili.com" || host.hasSuffix(".bilibili.com")
+}
+
 // MARK: - Model
 
 @MainActor
@@ -95,6 +105,8 @@ final class DownloadModel: ObservableObject {
     private var process: Process? = nil
     private var currentID: UUID? = nil
     private var generation = UUID()
+    /// Agent-owned ego-browser space kept open after a douyin download, reusable by the next douyin item.
+    private var douyinSpace: Int? = nil
 
     var detected: [String] { LinkParser.extract(input) }
     var isBusy: Bool { process != nil }
@@ -169,6 +181,14 @@ final class DownloadModel: ObservableObject {
         run(index)
     }
 
+    private func workerEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        environment["PATH"] = "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        environment["PYTHONUNBUFFERED"] = "1"
+        environment["LANG"] = "en_US.UTF-8"
+        return environment
+    }
+
     private func run(_ index: Int) {
         guard let resource = Bundle.main.resourceURL else { return }
         let item = queue[index]
@@ -179,18 +199,23 @@ final class DownloadModel: ObservableObject {
         queue[index].speed = ""
         let id = UUID()
         generation = id
+        // A kept douyin browser space is handed to the next douyin item so the
+        // browser tab is reused instead of opening a fresh one per video.
+        var space = item.browserSpace
+        if space == nil, isDouyinURL(item.url), let held = douyinSpace {
+            space = held
+            douyinSpace = nil
+            if CommandLine.arguments.contains("--auto-start") { print("DBG: reusing douyin space \(held)"); fflush(stdout) }
+        }
         let task = Process()
         task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         var arguments = ["python3", resource.appendingPathComponent("worker.py").path,
-                         "--url", item.url, "--output", output, "--quality", quality]
+                         "--url", item.url, "--output", output, "--quality", quality,
+                         "--keep-space"]
         if chromeCookies { arguments.append("--chrome-cookies") }
-        if let space = item.browserSpace { arguments += ["--browser-space", String(space)] }
+        if let space { arguments += ["--browser-space", String(space)] }
         task.arguments = arguments
-        var environment = ProcessInfo.processInfo.environment
-        environment["PATH"] = "\(NSHomeDirectory())/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-        environment["PYTHONUNBUFFERED"] = "1"
-        environment["LANG"] = "en_US.UTF-8"
-        task.environment = environment
+        task.environment = workerEnvironment()
         let pipe = Pipe()
         task.standardOutput = pipe
         task.standardError = pipe
@@ -233,6 +258,10 @@ final class DownloadModel: ObservableObject {
                     self.queue[current].fraction = nil
                 }
                 self.kick()
+                // Queue drained: nothing is running and nothing is waiting.
+                if self.process == nil, !self.queue.contains(where: { $0.state == .waiting }) {
+                    self.closeDouyinSpace()
+                }
             }
         }
     }
@@ -270,7 +299,10 @@ final class DownloadModel: ObservableObject {
         case "browserSpace":
             queue[index].browserSpace = message["id"] as? Int
         case "browserHandoff":
-            break
+            // The user owns the space now; it must never be reused by the queue.
+            douyinSpace = nil
+        case "spaceKept":
+            douyinSpace = message["id"] as? Int
         case "error":
             let text = message["text"] as? String ?? "下载失败"
             queue[index].state = queue[index].browserSpace != nil ? .needsAction : .failed
@@ -293,7 +325,13 @@ final class DownloadModel: ObservableObject {
                 hasAudio: message["hasAudio"] as? Bool ?? false)
             queue[index].record = record
             queue[index].state = .done
-            queue[index].note = "下载完成 · \(record.details)"
+            var note = "下载完成 · \(record.details)"
+            if isBilibiliURL(queue[index].url), quality == "best" || quality == "1080",
+               record.height > 0, record.height < 1080 {
+                note += " · 实际 \(record.height)p · 若该视频有更高清晰度，勾选「使用 Chrome 登录状态」可解锁"
+            }
+            queue[index].note = note
+            if CommandLine.arguments.contains("--auto-start") { print("DBG: note=\(note)"); fflush(stdout) }
             queue[index].fraction = 1
             queue[index].speed = ""
             queue[index].browserSpace = nil
@@ -324,6 +362,23 @@ final class DownloadModel: ObservableObject {
     func cancelAll() {
         queue.removeAll { $0.state == .waiting }
         process?.terminate()
+        closeDouyinSpace()
+    }
+
+    /// Closes the kept douyin browser space, if any. Fire and forget.
+    func closeDouyinSpace() {
+        guard let space = douyinSpace else { return }
+        douyinSpace = nil
+        if CommandLine.arguments.contains("--auto-start") { print("DBG: closing douyin space \(space)"); fflush(stdout) }
+        guard let resource = Bundle.main.resourceURL else { return }
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        task.arguments = ["python3", resource.appendingPathComponent("worker.py").path,
+                          "--close-space", String(space)]
+        task.environment = workerEnvironment()
+        task.standardOutput = FileHandle.nullDevice
+        task.standardError = FileHandle.nullDevice
+        try? task.run()
     }
 
     func resume(_ item: QueueItem) {
@@ -831,7 +886,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var model: DownloadModel?
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let model, model.isBusy else { return .terminateNow }
+        guard let model, model.isBusy else {
+            model?.closeDouyinSpace()
+            return .terminateNow
+        }
         let alert = NSAlert()
         alert.messageText = "视频正在下载"
         alert.informativeText = "退出会取消当前下载。"
