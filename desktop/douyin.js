@@ -98,7 +98,13 @@ try {
   }
   await fsp.unlink(part);
   part = undefined;
-  await task.finish({ keep: [] });
+  if (config.keepSpace) {
+    // Keep the space agent-owned so the next douyin item in the queue can
+    // take it over and reuse the tab instead of opening a fresh browser task.
+    emit('spaceKept', { id: task.spaceId });
+  } else {
+    await task.finish({ keep: [] });
+  }
   completed = true;
   emit('downloaded', { path: finalPath });
 } catch (error) {
