@@ -66,5 +66,18 @@ class BatchExtractTests(unittest.TestCase):
             worker.extract_url('https://v.douyin.com/a/ https://v.douyin.com/b/')
 
 
+class CookieProblemTests(unittest.TestCase):
+    def test_chrome_database_failures(self):
+        self.assertTrue(worker.cookie_problem(
+            ['ERROR: could not find chrome cookies database in "/Users/x/Library/Application Support/Google/Chrome"']))
+        self.assertTrue(worker.cookie_problem(['ERROR: failed to load cookies']))
+        self.assertTrue(worker.cookie_problem(['ERROR: chrome cookie database is locked']))
+
+    def test_unrelated_failures(self):
+        self.assertFalse(worker.cookie_problem(['ERROR: [Douyin] 123: Fresh cookies are needed']))
+        self.assertFalse(worker.cookie_problem(['ERROR: [BiliBili] HTTP Error 403: Forbidden']))
+        self.assertFalse(worker.cookie_problem(['[download] Got error: HTTP 404']))
+
+
 if __name__ == '__main__':
     unittest.main()

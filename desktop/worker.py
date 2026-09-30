@@ -55,6 +55,14 @@ def is_douyin(url):
     return host == 'douyin.com' or host.endswith('.douyin.com')
 
 
+def cookie_problem(lines):
+    """True when yt-dlp failed before downloading because browser cookies were unusable."""
+    text = '\n'.join(lines).lower()
+    return ('could not find' in text and 'cookies database' in text
+            or 'failed to load cookies' in text
+            or ('cookie' in text and 'database is locked' in text))
+
+
 def format_selector(quality):
     limit = '' if quality == 'best' else f'[height<=?{int(quality)}]'
     return f'bv*{limit}+ba/b{limit}'
@@ -162,9 +170,19 @@ def download(args):
             '-S', 'res,vcodec:h264,acodec:aac', '-f', format_selector(args.quality),
             '-P', str(output), '-o', '%(title).100B [%(id)s].%(ext)s',
         ]
-        if args.chrome_cookies:
-            command += ['--cookies-from-browser', 'chrome']
-        code = stream_process(command + ['--', url], env, on_ytdlp)
+
+        def run_ytdlp(with_cookies):
+            cookies = ['--cookies-from-browser', 'chrome'] if with_cookies else []
+            return stream_process(command + cookies + ['--', url], env, on_ytdlp)
+
+        code = run_ytdlp(args.chrome_cookies)
+        if code and args.chrome_cookies and cookie_problem(errors):
+            # A locked/missing Chrome profile must not fail an otherwise fine download.
+            emit('log', text='读取 Chrome 登录状态失败，改为不携带登录状态重试…')
+            emit('state', text='未读取到 Chrome 登录状态，正在重试…')
+            errors.clear()
+            files.clear()
+            code = run_ytdlp(False)
     else:
         code = 1
 
