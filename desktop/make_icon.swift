@@ -8,10 +8,11 @@ image.lockFocus()
 
 let tile = NSBezierPath(roundedRect: NSRect(x: 0, y: 0, width: side, height: side),
                         xRadius: side * 0.225, yRadius: side * 0.225)
+// Apple 风格：同一蓝色相的微妙纵向渐变（上亮下深），不用彩色渐变
 NSGradient(colors: [
-    NSColor(calibratedRed: 0.18, green: 0.83, blue: 0.75, alpha: 1),
-    NSColor(calibratedRed: 0.24, green: 0.72, blue: 0.98, alpha: 1),
-])!.draw(in: tile, angle: -50)
+    NSColor(calibratedRed: 0.16, green: 0.56, blue: 1.00, alpha: 1),
+    NSColor(calibratedRed: 0.00, green: 0.42, blue: 0.90, alpha: 1),
+])!.draw(in: tile, angle: -90)
 
 let white = NSColor.white
 white.setFill()

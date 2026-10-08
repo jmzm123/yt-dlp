@@ -818,13 +818,11 @@ private let card = Color.white
 private let cardBorder = Color.black.opacity(0.07)
 private let ink = Color(red: 0.11, green: 0.14, blue: 0.18)
 private let quiet = Color(red: 0.44, green: 0.49, blue: 0.54)
-private let teal = Color(red: 0.02, green: 0.60, blue: 0.55)
-private let sky = Color(red: 0.06, green: 0.55, blue: 0.91)
-private let mint = Color(red: 0.05, green: 0.62, blue: 0.32)
-private let warn = Color(red: 0.83, green: 0.45, blue: 0.04)
-private let danger = Color(red: 0.86, green: 0.24, blue: 0.20)
-private let accent = LinearGradient(colors: [teal, sky], startPoint: .leading, endPoint: .trailing)
-private let accentTile = LinearGradient(colors: [teal, sky], startPoint: .topLeading, endPoint: .bottomTrailing)
+// 单一强调色与状态色全部取自 Apple 系统色板（不渐变，扁平克制）
+private let primary = Color(nsColor: .systemBlue)
+private let success = Color(nsColor: .systemGreen)
+private let warn = Color(nsColor: .systemOrange)
+private let danger = Color(nsColor: .systemRed)
 
 // MARK: - Window
 
@@ -838,9 +836,9 @@ struct DownloadWindow: View {
             sidebar
             ZStack {
                 bg
-                Circle().fill(teal.opacity(0.10)).frame(width: 420).blur(radius: 90)
+                Circle().fill(primary.opacity(0.10)).frame(width: 420).blur(radius: 90)
                     .offset(x: 260, y: -280)
-                Circle().fill(sky.opacity(0.08)).frame(width: 380).blur(radius: 90)
+                Circle().fill(primary.opacity(0.08)).frame(width: 380).blur(radius: 90)
                     .offset(x: -180, y: 300)
                 ScrollView {
                     VStack(alignment: .leading, spacing: 22) {
@@ -866,7 +864,7 @@ struct DownloadWindow: View {
         .foregroundColor(ink)
         .frame(minWidth: 960, minHeight: 700)
         .preferredColorScheme(.light)
-        .tint(teal)
+        .tint(primary)
         .onAppear {
             NSApp.activate(ignoringOtherApps: true)
             // Headless smoke test: --auto-start (with --ui-test input) drives the real queue.
@@ -888,19 +886,19 @@ struct DownloadWindow: View {
                 Image(systemName: "arrow.down.to.line.compact")
                     .font(.system(size: 18, weight: .bold)).foregroundColor(.white)
                     .frame(width: 38, height: 38)
-                    .background(accentTile, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .shadow(color: teal.opacity(0.35), radius: 10, y: 3)
+                    .background(primary, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .shadow(color: primary.opacity(0.35), radius: 10, y: 3)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("林序下载器").font(.system(size: 16, weight: .bold, design: .rounded))
                     Text("VIDEO LIBRARY").font(.system(size: 8, weight: .semibold)).tracking(1.2).foregroundColor(quiet)
                 }
             }.padding(.bottom, 30)
             Label("视频下载", systemImage: "arrow.down.circle.fill")
-                .font(.system(size: 13, weight: .semibold)).foregroundColor(teal)
+                .font(.system(size: 13, weight: .semibold)).foregroundColor(primary)
                 .padding(.horizontal, 13).padding(.vertical, 11)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(teal.opacity(0.25), lineWidth: 1))
+                .background(primary.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(primary.opacity(0.25), lineWidth: 1))
             HStack {
                 Text("最近下载").font(.system(size: 11, weight: .medium)).foregroundColor(quiet)
                 Spacer()
@@ -923,7 +921,7 @@ struct DownloadWindow: View {
             Spacer(minLength: 20)
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 6) {
-                    Circle().fill(mint).frame(width: 5, height: 5)
+                    Circle().fill(success).frame(width: 5, height: 5)
                     Text("本地运行").font(.system(size: 10, weight: .medium))
                 }
                 Text("Powered by yt-dlp · v0.2.0")
@@ -940,7 +938,7 @@ struct DownloadWindow: View {
     private func historyCard(_ item: DownloadRecord) -> some View {
         VStack(alignment: .leading, spacing: 7) {
             HStack(alignment: .top, spacing: 9) {
-                Image(systemName: "film.fill").foregroundColor(teal).padding(.top, 2)
+                Image(systemName: "film.fill").foregroundColor(primary).padding(.top, 2)
                 VStack(alignment: .leading, spacing: 5) {
                     Text(item.title).font(.system(size: 11, weight: .medium)).lineLimit(2).multilineTextAlignment(.leading)
                     Text(item.details).font(.system(size: 9, design: .monospaced)).foregroundColor(quiet).lineLimit(1)
@@ -962,7 +960,7 @@ struct DownloadWindow: View {
             if let note = model.historyNotes[item.id] {
                 Text(note)
                     .font(.system(size: 9))
-                    .foregroundColor(item.transcriptPath != nil ? mint : (model.transcribingHistory.contains(item.id) ? teal : danger))
+                    .foregroundColor(item.transcriptPath != nil ? success : (model.transcribingHistory.contains(item.id) ? primary : danger))
                     .lineLimit(2)
             }
         }
@@ -989,9 +987,9 @@ struct DownloadWindow: View {
             Spacer()
             if !model.queue.isEmpty {
                 HStack(spacing: 8) {
-                    statChip("\(model.doneCount)", "完成", mint)
+                    statChip("\(model.doneCount)", "完成", success)
                     if model.failedCount > 0 { statChip("\(model.failedCount)", "失败", danger) }
-                    if model.waitingCount > 0 { statChip("\(model.waitingCount)", "排队", sky) }
+                    if model.waitingCount > 0 { statChip("\(model.waitingCount)", "排队", primary) }
                 }.padding(.bottom, 4)
             }
         }.padding(.top, 4)
@@ -1022,7 +1020,7 @@ struct DownloadWindow: View {
                 }
                 Button { model.paste() } label: {
                     Label("粘贴", systemImage: "doc.on.clipboard").font(.system(size: 11, weight: .medium))
-                }.buttonStyle(PressableStyle()).foregroundColor(teal)
+                }.buttonStyle(PressableStyle()).foregroundColor(primary)
             }
             ZStack(alignment: .topLeading) {
                 if model.input.isEmpty {
@@ -1039,7 +1037,7 @@ struct DownloadWindow: View {
             .padding(10)
             .background(Color.black.opacity(0.04), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(linkFocused ? teal.opacity(0.55) : cardBorder, lineWidth: 1))
+                .stroke(linkFocused ? primary.opacity(0.55) : cardBorder, lineWidth: 1))
             if let hint = model.parseHint {
                 HStack(spacing: 6) {
                     Image(systemName: "exclamationmark.circle.fill").foregroundColor(warn)
@@ -1055,14 +1053,14 @@ struct DownloadWindow: View {
                         Text("已识别 \(model.detected.count) 个链接")
                             .font(.system(size: 11, weight: .bold)).foregroundColor(.white)
                             .padding(.horizontal, 9).padding(.vertical, 4)
-                            .background(accent, in: Capsule())
+                            .background(primary, in: Capsule())
                         Text(LinkParser.hostSummary(model.detected))
                             .font(.system(size: 11, design: .monospaced)).foregroundColor(quiet).lineLimit(1)
                     }
                 }
             } else {
                 HStack(spacing: 6) {
-                    Image(systemName: "sparkle").foregroundColor(teal)
+                    Image(systemName: "sparkle").foregroundColor(primary)
                     Text("抖音、B站及 yt-dlp 支持的网站，自动从分享文案中提取链接。")
                 }.font(.system(size: 11)).foregroundColor(quiet)
             }
@@ -1094,7 +1092,7 @@ struct DownloadWindow: View {
                     .font(.system(size: 12, design: .monospaced)).foregroundColor(quiet).lineLimit(1).truncationMode(.middle).help(model.output)
                 Spacer(minLength: 0)
                 Button("更改…") { model.chooseOutput() }
-                    .buttonStyle(PressableStyle()).font(.system(size: 11, weight: .medium)).foregroundColor(teal)
+                    .buttonStyle(PressableStyle()).font(.system(size: 11, weight: .medium)).foregroundColor(primary)
             }
             Toggle("使用 Chrome 登录状态", isOn: $model.chromeCookies)
                 .toggleStyle(.checkbox).font(.system(size: 11)).foregroundColor(quiet)
@@ -1105,7 +1103,7 @@ struct DownloadWindow: View {
                     .help("用本机语音识别（Qwen3-ASR）把视频语音转成 Markdown 文字稿，保存在视频旁边。")
                 Spacer(minLength: 0)
                 Button("转写本地音视频…") { model.chooseLocalVideo() }
-                    .buttonStyle(PressableStyle()).font(.system(size: 11, weight: .medium)).foregroundColor(teal)
+                    .buttonStyle(PressableStyle()).font(.system(size: 11, weight: .medium)).foregroundColor(primary)
                     .help("选择这台 Mac 上的视频或音频文件，直接转成 Markdown 文字稿")
             }
         }.padding(.horizontal, 3)
@@ -1129,9 +1127,9 @@ struct DownloadWindow: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(model.detected.isEmpty && !model.isBusy ? quiet : .white)
                 .frame(maxWidth: .infinity).frame(height: 46)
-                .background(model.detected.isEmpty && !model.isBusy ? AnyShapeStyle(Color.black.opacity(0.08)) : AnyShapeStyle(accent),
+                .background(model.detected.isEmpty && !model.isBusy ? AnyShapeStyle(Color.black.opacity(0.08)) : AnyShapeStyle(primary),
                             in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .shadow(color: model.detected.isEmpty ? .clear : teal.opacity(0.3), radius: 12, y: 4)
+                .shadow(color: model.detected.isEmpty ? .clear : primary.opacity(0.3), radius: 12, y: 4)
             }
             .buttonStyle(PressableStyle()).keyboardShortcut(.return, modifiers: .command)
             .disabled(model.detected.isEmpty)
@@ -1185,9 +1183,9 @@ struct QueueCard: View {
     private var statusColor: Color {
         switch item.state {
         case .waiting: return quiet
-        case .working: return sky
+        case .working: return primary
         case .needsAction: return warn
-        case .done: return mint
+        case .done: return success
         case .failed: return danger
         }
     }
@@ -1212,7 +1210,7 @@ struct QueueCard: View {
                 Text(item.displayTitle)
                     .font(.system(size: 12.5, weight: .semibold)).lineLimit(1).truncationMode(.middle)
                 HStack(spacing: 6) {
-                    Text(item.host).font(.system(size: 10, design: .monospaced)).foregroundColor(teal.opacity(0.85))
+                    Text(item.host).font(.system(size: 10, design: .monospaced)).foregroundColor(primary.opacity(0.85))
                     Text("·").foregroundColor(quiet)
                     Text(item.state == .working && !item.speed.isEmpty ? item.speed : item.note)
                         .font(.system(size: 11)).foregroundColor(item.state == .failed || item.state == .needsAction ? statusColor.opacity(0.95) : quiet)
@@ -1227,7 +1225,7 @@ struct QueueCard: View {
                         Text(transcriptNote)
                     }
                     .font(.system(size: 10))
-                    .foregroundColor(item.transcriptPath != nil ? mint : (item.transcribing ? teal : danger))
+                    .foregroundColor(item.transcriptPath != nil ? success : (item.transcribing ? primary : danger))
                 }
                 if item.state == .needsAction {
                     HStack(spacing: 12) {
@@ -1235,7 +1233,7 @@ struct QueueCard: View {
                             Label("继续下载", systemImage: "play.fill")
                                 .font(.system(size: 11, weight: .bold)).foregroundColor(.white)
                                 .padding(.horizontal, 12).padding(.vertical, 6)
-                                .background(accent, in: Capsule())
+                                .background(primary, in: Capsule())
                         }.buttonStyle(PressableStyle())
                         Button("跳过") { model.skip(item) }
                             .buttonStyle(PressableStyle()).font(.system(size: 11)).foregroundColor(quiet)
@@ -1248,7 +1246,7 @@ struct QueueCard: View {
         .padding(14)
         .background(card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .stroke(item.state == .working ? sky.opacity(0.35) : cardBorder, lineWidth: 1))
+            .stroke(item.state == .working ? primary.opacity(0.35) : cardBorder, lineWidth: 1))
         .shadow(color: .black.opacity(0.04), radius: 6, y: 2)
     }
 
@@ -1260,7 +1258,7 @@ struct QueueCard: View {
         case .working:
             if let fraction = item.fraction {
                 Text("\(Int(fraction * 100))%")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced)).foregroundColor(sky)
+                    .font(.system(size: 12, weight: .bold, design: .monospaced)).foregroundColor(primary)
             }
             iconButton("stop.fill", "取消") { model.cancel(item) }
         case .needsAction:
@@ -1303,7 +1301,7 @@ struct ProgressBar: View {
             ZStack(alignment: .leading) {
                 Capsule().fill(Color.black.opacity(0.08))
                 if let fraction {
-                    Capsule().fill(accent)
+                    Capsule().fill(primary)
                         .frame(width: max(6, geo.size.width * CGFloat(fraction)))
                         // Critically damped spring: smooth, no overshoot (Apple default)
                         .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 1.0), value: fraction)
@@ -1322,7 +1320,7 @@ private struct IndeterminateFill: View {
     @State private var phase = false
 
     var body: some View {
-        Capsule().fill(accent)
+        Capsule().fill(primary)
             .frame(width: max(30, width * 0.28))
             .offset(x: reduceMotion ? width * 0.36 : (phase ? width * 0.72 : 0))
             .animation(reduceMotion ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: phase)
