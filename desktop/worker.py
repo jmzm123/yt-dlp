@@ -104,7 +104,7 @@ def stream_process(args, env, on_line, stdin=None):
             CHILD = None
 
 
-def probe(path):
+def probe(path, require_video=True):
     result = subprocess.run([
         shutil.which('ffprobe') or 'ffprobe', '-v', 'error', '-show_entries',
         'format=duration,size:stream=codec_type,width,height', '-of', 'json', str(path),
@@ -112,11 +112,11 @@ def probe(path):
     info = json.loads(result.stdout)
     streams = info.get('streams', [])
     video = next((s for s in streams if s.get('codec_type') == 'video'), None)
-    if not video:
+    if not video and require_video:
         raise ValueError('文件没有可识别的视频画面，请换一个链接重试。')
     return {
         'path': str(path), 'title': path.stem,
-        'width': video.get('width', 0), 'height': video.get('height', 0),
+        'width': (video or {}).get('width', 0), 'height': (video or {}).get('height', 0),
         'duration': float(info.get('format', {}).get('duration', 0)),
         'size': path.stat().st_size,
         'hasAudio': any(s.get('codec_type') == 'audio' for s in streams),
@@ -276,9 +276,9 @@ def transcribe(args):
     path = Path(args.transcribe).expanduser().resolve()
     if not path.is_file():
         raise ValueError('文件不存在或已被移动。')
-    info = probe(path)
+    info = probe(path, require_video=False)
     if not info['hasAudio']:
-        raise ValueError('这个视频没有音轨，无法转写文字稿。')
+        raise ValueError('这个文件没有音轨，无法转写文字稿。')
     asr_home = find_asr_home()
     if not asr_home:
         raise ValueError('未找到语音转写工具 asr_subtitle（期望在 ~/Documents/Work/linxu/asr_subtitle）。')
@@ -322,7 +322,9 @@ def transcribe(args):
                 md_path = candidate
                 break
     md_path.write_text(markdown, encoding='utf-8')
-    emit('transcribed', path=str(md_path), chars=len(text))
+    emit('transcribed', path=str(md_path), chars=len(text),
+         width=info['width'], height=info['height'], duration=info['duration'],
+         size=info['size'], hasAudio=info['hasAudio'])
 
 
 def main():
