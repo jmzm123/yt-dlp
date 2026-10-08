@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
@@ -246,6 +247,84 @@ def close_browser_space(space_id):
         pass
 
 
+def find_asr_home():
+    candidates = []
+    if os.environ.get('ASR_SUBTITLE_HOME'):
+        candidates.append(Path(os.environ['ASR_SUBTITLE_HOME']))
+    candidates.append(Path.home() / 'Documents/Work/linxu/asr_subtitle')
+    for home in candidates:
+        if (home / '.venv/bin/python').is_file() and (home / 'transcribe.py').is_file():
+            return home
+    return None
+
+
+def wrap_paragraphs(text, width=180):
+    """把连续转写文本按硬标点断句后分组为适合阅读的 Markdown 段落。"""
+    sentences = [s for s in re.split(r'(?<=[。！？；!?;])', text) if s.strip()]
+    paragraphs, current = [], ''
+    for sentence in sentences:
+        current += sentence
+        if len(current) >= width:
+            paragraphs.append(current.strip())
+            current = ''
+    if current.strip():
+        paragraphs.append(current.strip())
+    return '\n\n'.join(paragraphs)
+
+
+def transcribe(args):
+    path = Path(args.transcribe).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError('文件不存在或已被移动。')
+    info = probe(path)
+    if not info['hasAudio']:
+        raise ValueError('这个视频没有音轨，无法转写文字稿。')
+    asr_home = find_asr_home()
+    if not asr_home:
+        raise ValueError('未找到语音转写工具 asr_subtitle（期望在 ~/Documents/Work/linxu/asr_subtitle）。')
+    tmpdir = Path(tempfile.mkdtemp(prefix='linxu-asr-'))
+    emit('state', text='正在加载语音识别模型…')
+
+    def on_line(line):
+        emit('log', text=line[:600])
+        if '模型就绪' in line:
+            emit('state', text='正在识别语音（约需一分钟）…')
+        match = re.search(r'转写 第 (\d+)/(\d+) 块', line)
+        if match:
+            emit('progress', fraction=0.6 * int(match[1]) / int(match[2]))
+            return
+        match = re.search(r'对齐 第 (\d+)/(\d+) 块', line)
+        if match:
+            emit('progress', fraction=0.6 + 0.4 * int(match[1]) / int(match[2]))
+
+    code = stream_process(
+        [str(asr_home / '.venv/bin/python'), str(asr_home / 'transcribe.py'),
+         str(path), '-o', str(tmpdir)],
+        dict(os.environ), on_line)
+    txt = tmpdir / f'{path.stem}.txt'
+    if code or not txt.is_file():
+        shutil.rmtree(tmpdir, ignore_errors=True)
+        raise ValueError('转写失败，请展开详细记录查看原因。')
+    text = txt.read_text(encoding='utf-8').strip()
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    if not text:
+        raise ValueError('没有识别到语音内容（可能是纯音乐或无声视频）。')
+    minutes, seconds = divmod(int(info['duration']), 60)
+    body = wrap_paragraphs(text)
+    markdown = (f'# {path.stem}\n\n'
+                f'> 语音转文字稿 · 本机 Qwen3-ASR 离线生成 · 时长 {minutes:02d}:{seconds:02d}\n\n'
+                f'{body}\n')
+    md_path = path.with_suffix('.md')
+    if md_path.exists():
+        for suffix in range(1, 100):
+            candidate = path.with_name(f'{path.stem} ({suffix}).md')
+            if not candidate.exists():
+                md_path = candidate
+                break
+    md_path.write_text(markdown, encoding='utf-8')
+    emit('transcribed', path=str(md_path), chars=len(text))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--url')
@@ -255,16 +334,20 @@ def main():
     parser.add_argument('--browser-space', type=int)
     parser.add_argument('--keep-space', action='store_true')
     parser.add_argument('--close-space', type=int)
+    parser.add_argument('--transcribe')
     args = parser.parse_args()
     if args.close_space is not None:
         close_browser_space(args.close_space)
         return 0
-    if not args.url or not args.output:
+    if not args.transcribe and (not args.url or not args.output):
         parser.error('--url 和 --output 必填')
     signal.signal(signal.SIGTERM, cancel)
     signal.signal(signal.SIGINT, cancel)
     try:
-        download(args)
+        if args.transcribe:
+            transcribe(args)
+        else:
+            download(args)
         return 0
     except Cancelled:
         emit('cancelled', text='下载已取消')

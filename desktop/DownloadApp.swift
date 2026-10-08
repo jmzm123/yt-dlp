@@ -37,6 +37,9 @@ struct QueueItem: Identifiable {
     var speed = ""
     var browserSpace: Int? = nil
     var record: DownloadRecord? = nil
+    var transcribing = false
+    var transcriptPath: String? = nil
+    var transcriptNote: String? = nil
     var host: String { URL(string: url)?.host ?? url }
     var displayTitle: String { title.isEmpty ? url : title }
 }
@@ -107,6 +110,13 @@ final class DownloadModel: ObservableObject {
     private var generation = UUID()
     /// Agent-owned ego-browser space kept open after a douyin download, reusable by the next douyin item.
     private var douyinSpace: Int? = nil
+    @Published var autoTranscribe = UserDefaults.standard.bool(forKey: "autoTranscribe") {
+        didSet { UserDefaults.standard.set(autoTranscribe, forKey: "autoTranscribe") }
+    }
+    private var transcribeProcess: Process? = nil
+    private var transcribeQueue: [UUID] = []
+    private var transcribeGen = UUID()
+    var isTranscribing: Bool { transcribeProcess != nil }
 
     var detected: [String] { LinkParser.extract(input) }
     var isBusy: Bool { process != nil }
@@ -341,6 +351,7 @@ final class DownloadModel: ObservableObject {
             if let saved = try? JSONEncoder().encode(history) {
                 UserDefaults.standard.set(saved, forKey: "downloadHistory")
             }
+            if autoTranscribe { enqueueTranscribe(queue[index]) }
         default:
             break
         }
@@ -363,6 +374,128 @@ final class DownloadModel: ObservableObject {
         queue.removeAll { $0.state == .waiting }
         process?.terminate()
         closeDouyinSpace()
+        transcribeQueue.removeAll()
+        transcribeProcess?.terminate()
+        for index in queue.indices where queue[index].transcribing {
+            queue[index].transcribing = false
+            queue[index].transcriptNote = nil
+        }
+    }
+
+    // MARK: Transcription (asr_subtitle · Qwen3-ASR)
+
+    func enqueueTranscribe(_ item: QueueItem) {
+        guard item.state == .done, item.record != nil, item.transcriptPath == nil else { return }
+        guard !item.transcribing, !transcribeQueue.contains(item.id) else { return }
+        if let index = queue.firstIndex(where: { $0.id == item.id }) {
+            queue[index].transcriptNote = "排队等待转写…"
+        }
+        transcribeQueue.append(item.id)
+        runTranscribeNext()
+    }
+
+    private func runTranscribeNext() {
+        guard transcribeProcess == nil, let nextID = transcribeQueue.first else { return }
+        guard let index = queue.firstIndex(where: { $0.id == nextID }),
+              let path = queue[index].record?.path else {
+            transcribeQueue.removeFirst()
+            runTranscribeNext()
+            return
+        }
+        guard let resource = Bundle.main.resourceURL else { return }
+        transcribeQueue.removeFirst()
+        queue[index].transcribing = true
+        queue[index].transcriptNote = "正在加载语音识别模型…"
+        queue[index].fraction = nil
+        let itemID = queue[index].id
+        let gen = UUID()
+        transcribeGen = gen
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        task.arguments = ["python3", resource.appendingPathComponent("worker.py").path,
+                          "--transcribe", path]
+        task.environment = workerEnvironment()
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        task.standardError = pipe
+        task.standardInput = FileHandle.nullDevice
+        do {
+            try task.run()
+            transcribeProcess = task
+        } catch {
+            queue[index].transcribing = false
+            queue[index].transcriptNote = "无法启动转写程序：\(error.localizedDescription)"
+            runTranscribeNext()
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            var buffer = Data()
+            while true {
+                let data = pipe.fileHandleForReading.availableData
+                if data.isEmpty { break }
+                buffer.append(data)
+                while let newline = buffer.firstIndex(of: 10) {
+                    let line = String(data: buffer[..<newline], encoding: .utf8) ?? ""
+                    buffer.removeSubrange(...newline)
+                    DispatchQueue.main.async { self?.receiveTranscribe(line, itemID: itemID, gen: gen) }
+                }
+            }
+            if !buffer.isEmpty {
+                let line = String(data: buffer, encoding: .utf8) ?? ""
+                DispatchQueue.main.async { self?.receiveTranscribe(line, itemID: itemID, gen: gen) }
+            }
+            task.waitUntilExit()
+            DispatchQueue.main.async {
+                guard let self, self.transcribeGen == gen else { return }
+                self.transcribeProcess = nil
+                if let current = self.queue.firstIndex(where: { $0.id == itemID }),
+                   self.queue[current].transcribing {
+                    self.queue[current].transcribing = false
+                    self.queue[current].transcriptNote = nil
+                    self.queue[current].fraction = 1
+                }
+                self.runTranscribeNext()
+            }
+        }
+    }
+
+    private func receiveTranscribe(_ line: String, itemID: UUID, gen: UUID) {
+        if CommandLine.arguments.contains("--auto-start") { print("DBG-T:", line); fflush(stdout) }
+        guard transcribeGen == gen, let index = queue.firstIndex(where: { $0.id == itemID }) else { return }
+        guard let data = line.data(using: .utf8),
+              let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let event = message["event"] as? String else {
+            if !line.isEmpty { addLog(line) }
+            return
+        }
+        switch event {
+        case "state":
+            queue[index].transcriptNote = message["text"] as? String
+        case "progress":
+            queue[index].fraction = (message["fraction"] as? NSNumber)?.doubleValue
+        case "log":
+            addLog(message["text"] as? String ?? "")
+        case "transcribed":
+            queue[index].transcriptPath = message["path"] as? String
+            queue[index].transcriptNote = "文字稿已生成"
+            queue[index].transcribing = false
+            queue[index].fraction = 1
+        case "error":
+            queue[index].transcribing = false
+            queue[index].transcriptNote = message["text"] as? String ?? "转写失败"
+            queue[index].fraction = 1
+        case "cancelled":
+            queue[index].transcribing = false
+            queue[index].transcriptNote = nil
+            queue[index].fraction = 1
+        default:
+            break
+        }
+    }
+
+    func cleanup() {
+        closeDouyinSpace()
+        transcribeProcess?.terminate()
     }
 
     /// Closes the kept douyin browser space, if any. Fire and forget.
@@ -397,27 +530,33 @@ final class DownloadModel: ObservableObject {
     }
 
     func retry(_ item: QueueItem) {
-        guard let index = queue.firstIndex(where: { $0.id == item.id }) else { return }
+        guard let index = queue.firstIndex(where: { $0.id == item.id }), !item.transcribing else { return }
         queue[index].state = .waiting
         queue[index].note = "排队等待中"
         queue[index].fraction = nil
         queue[index].record = nil
         queue[index].browserSpace = nil
+        queue[index].transcriptPath = nil
+        queue[index].transcriptNote = nil
         kick()
     }
 
     func remove(_ item: QueueItem) {
-        guard item.state != .working else { return }
+        guard item.state != .working, !item.transcribing else { return }
         queue.removeAll { $0.id == item.id }
     }
 
     func clearFinished() {
-        queue.removeAll { $0.state == .done || $0.state == .failed }
+        queue.removeAll { ($0.state == .done || $0.state == .failed) && !$0.transcribing }
     }
 
     func open(_ item: DownloadRecord) {
         guard FileManager.default.fileExists(atPath: item.path) else { return }
         NSWorkspace.shared.open(item.url)
+    }
+
+    func openPath(_ path: String) {
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     func reveal(_ item: DownloadRecord) {
@@ -677,6 +816,9 @@ struct DownloadWindow: View {
             Toggle("使用 Chrome 登录状态", isOn: $model.chromeCookies)
                 .toggleStyle(.checkbox).font(.system(size: 11)).foregroundColor(quiet)
                 .help("当网站要求登录时，允许 yt-dlp 读取 Chrome Cookie。")
+            Toggle("下载后自动生成文字稿", isOn: $model.autoTranscribe)
+                .toggleStyle(.checkbox).font(.system(size: 11)).foregroundColor(quiet)
+                .help("用本机语音识别（Qwen3-ASR）把视频语音转成 Markdown 文字稿，保存在视频旁边。")
         }.padding(.horizontal, 3)
     }
 
@@ -785,8 +927,16 @@ struct QueueCard: View {
                         .font(.system(size: 11)).foregroundColor(item.state == .failed || item.state == .needsAction ? statusColor.opacity(0.95) : quiet)
                         .lineLimit(2)
                 }
-                if item.state == .working {
+                if item.state == .working || item.transcribing {
                     ProgressBar(fraction: item.fraction)
+                }
+                if let transcriptNote = item.transcriptNote, item.state == .done {
+                    HStack(spacing: 5) {
+                        Image(systemName: item.transcriptPath != nil ? "checkmark.circle.fill" : (item.transcribing ? "waveform" : "exclamationmark.circle"))
+                        Text(transcriptNote)
+                    }
+                    .font(.system(size: 10))
+                    .foregroundColor(item.transcriptPath != nil ? mint : (item.transcribing ? teal : danger))
                 }
                 if item.state == .needsAction {
                     HStack(spacing: 12) {
@@ -828,6 +978,13 @@ struct QueueCard: View {
                 HStack(spacing: 6) {
                     iconButton("play.fill", "播放") { model.open(record) }
                     iconButton("folder", "在 Finder 中显示") { model.reveal(record) }
+                    if item.transcribing {
+                        ProgressView().controlSize(.small).frame(width: 28, height: 28)
+                    } else if let transcript = item.transcriptPath {
+                        iconButton("doc.text.fill", "打开文字稿") { model.openPath(transcript) }
+                    } else {
+                        iconButton("doc.text", "生成文字稿（本地语音转写）") { model.enqueueTranscribe(item) }
+                    }
                 }
             }
         case .failed:
@@ -888,17 +1045,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var model: DownloadModel?
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let model, model.isBusy else {
-            model?.closeDouyinSpace()
+        guard let model, model.isBusy || model.isTranscribing else {
+            model?.cleanup()
             return .terminateNow
         }
         let alert = NSAlert()
-        alert.messageText = "视频正在下载"
-        alert.informativeText = "退出会取消当前下载。"
-        alert.addButton(withTitle: "继续下载")
-        alert.addButton(withTitle: "取消下载并退出")
+        alert.messageText = "任务正在进行"
+        alert.informativeText = "退出会取消当前下载与转写。"
+        alert.addButton(withTitle: "继续等待")
+        alert.addButton(withTitle: "取消并退出")
         if alert.runModal() == .alertSecondButtonReturn {
             model.cancelAll()
+            model.cleanup()
             // Let the worker terminate its downloader and close its own browser task.
             DispatchQueue.main.asyncAfter(deadline: .now() + 4) { NSApp.reply(toApplicationShouldTerminate: true) }
             return .terminateLater
