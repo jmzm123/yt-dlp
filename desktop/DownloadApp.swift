@@ -1,5 +1,43 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+
+// MARK: - Motion & feedback primitives
+
+/// Press feedback per Designing Fluid Interfaces: respond on pointer-down,
+/// with a fast, interruptible spring back to rest.
+private struct PressableStyle: ButtonStyle {
+    var scale: CGFloat = 0.97
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .opacity(configuration.isPressed ? 0.7 : 1)
+            .scaleEffect(configuration.isPressed ? scale : 1)
+            .animation(.spring(response: 0.22, dampingFraction: 0.9), value: configuration.isPressed)
+    }
+}
+
+/// Icon button with pointer-down feedback and a hover state.
+private struct HoverIconButton: View {
+    let symbol: String
+    let help: String
+    var size: CGFloat = 28
+    var action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: size * 0.4, weight: .semibold))
+                .foregroundColor(quiet)
+                .frame(width: size, height: size)
+                .background(Color.black.opacity(hovering ? 0.10 : 0.05),
+                            in: RoundedRectangle(cornerRadius: size * 0.29, style: .continuous))
+        }
+        .buttonStyle(PressableStyle())
+        .help(help)
+        .onHover { hovering = $0 }
+    }
+}
 
 // MARK: - Records
 
@@ -13,6 +51,7 @@ struct DownloadRecord: Codable, Identifiable {
     let size: Int64
     let hasAudio: Bool
     var date = Date()
+    var transcriptPath: String? = nil
     var url: URL { URL(fileURLWithPath: path) }
     var details: String {
         let time = String(format: "%02d:%02d", Int(duration) / 60, Int(duration) % 60)
@@ -40,7 +79,8 @@ struct QueueItem: Identifiable {
     var transcribing = false
     var transcriptPath: String? = nil
     var transcriptNote: String? = nil
-    var host: String { URL(string: url)?.host ?? url }
+    var localFile = false
+    var host: String { localFile ? "本地音视频" : (URL(string: url)?.host ?? url) }
     var displayTitle: String { title.isEmpty ? url : title }
 }
 
@@ -95,7 +135,11 @@ private func isBilibiliURL(_ url: String) -> Bool {
 
 @MainActor
 final class DownloadModel: ObservableObject {
-    @Published var input = ""
+    @Published var input = "" {
+        didSet { detected = LinkParser.extract(input) }
+    }
+    /// Parsed once per input change, not on every view refresh.
+    @Published private(set) var detected: [String] = []
     @Published var quality = "best"
     @Published var chromeCookies = false
     @Published var output: String = UserDefaults.standard.string(forKey: "outputDirectory")
@@ -114,11 +158,17 @@ final class DownloadModel: ObservableObject {
         didSet { UserDefaults.standard.set(autoTranscribe, forKey: "autoTranscribe") }
     }
     private var transcribeProcess: Process? = nil
-    private var transcribeQueue: [UUID] = []
+    private enum TranscribeTarget: Equatable {
+        case queueItem(UUID)
+        case historyItem(UUID)
+    }
+    private var transcribeQueue: [TranscribeTarget] = []
+    private var transcribeCurrent: TranscribeTarget? = nil
     private var transcribeGen = UUID()
+    @Published private(set) var transcribingHistory: Set<UUID> = []
+    @Published private(set) var historyNotes: [UUID: String] = [:]
     var isTranscribing: Bool { transcribeProcess != nil }
 
-    var detected: [String] { LinkParser.extract(input) }
     var isBusy: Bool { process != nil }
     var doneCount: Int { queue.filter { $0.state == .done }.count }
     var failedCount: Int { queue.filter { $0.state == .failed }.count }
@@ -130,11 +180,29 @@ final class DownloadModel: ObservableObject {
            let saved = try? JSONDecoder().decode([DownloadRecord].self, from: data) {
             history = saved
         }
+        // Backfill/expire transcript links against what's actually on disk.
+        var changed = false
+        for index in history.indices {
+            let sibling = URL(fileURLWithPath: history[index].path)
+                .deletingPathExtension().appendingPathExtension("md").path
+            if let saved = history[index].transcriptPath,
+               !FileManager.default.fileExists(atPath: saved) {
+                history[index].transcriptPath = nil
+                changed = true
+            }
+            if history[index].transcriptPath == nil,
+               FileManager.default.fileExists(atPath: sibling) {
+                history[index].transcriptPath = sibling
+                changed = true
+            }
+        }
+        if changed { saveHistory() }
         if CommandLine.arguments.contains("--ui-test") {
             input = """
             3.87 :9pm A@g.Ok cnD:/ 08/23 跑分越高的手机，就越好用吗？ # 小米 # OPPO # 骁龙 # 联发科 # 跑分  https://v.douyin.com/4OazCjDdu4o/ 复制此链接，打开Dou音搜索，直接观看视频！
             【自学动画 爆肝俩月】 https://www.bilibili.com/video/BV1E6aq6pEKR 哔哩哔哩
             """
+            detected = LinkParser.extract(input)  // observers don't fire during init
         }
     }
 
@@ -348,9 +416,7 @@ final class DownloadModel: ObservableObject {
             history.removeAll { $0.path == path }
             history.insert(record, at: 0)
             history = Array(history.prefix(30))
-            if let saved = try? JSONEncoder().encode(history) {
-                UserDefaults.standard.set(saved, forKey: "downloadHistory")
-            }
+            saveHistory()
             if autoTranscribe { enqueueTranscribe(queue[index]) }
         default:
             break
@@ -360,6 +426,12 @@ final class DownloadModel: ObservableObject {
     private func addLog(_ line: String) {
         logs.append(line)
         if logs.count > 150 { logs.removeFirst(logs.count - 150) }
+    }
+
+    private func saveHistory() {
+        if let saved = try? JSONEncoder().encode(history) {
+            UserDefaults.standard.set(saved, forKey: "downloadHistory")
+        }
     }
 
     func cancel(_ item: QueueItem) {
@@ -380,34 +452,140 @@ final class DownloadModel: ObservableObject {
             queue[index].transcribing = false
             queue[index].transcriptNote = nil
         }
+        transcribingHistory.removeAll()
+        historyNotes = [:]
     }
 
     // MARK: Transcription (asr_subtitle · Qwen3-ASR)
 
     func enqueueTranscribe(_ item: QueueItem) {
-        guard item.state == .done, item.record != nil, item.transcriptPath == nil else { return }
-        guard !item.transcribing, !transcribeQueue.contains(item.id) else { return }
+        guard item.state == .done, let record = item.record, item.transcriptPath == nil else { return }
+        guard !item.transcribing, !transcribeQueue.contains(.queueItem(item.id)) else { return }
+        guard FileManager.default.fileExists(atPath: record.path) else {
+            if let index = queue.firstIndex(where: { $0.id == item.id }) {
+                queue[index].transcriptNote = "文件已被移动或删除"
+            }
+            return
+        }
         if let index = queue.firstIndex(where: { $0.id == item.id }) {
             queue[index].transcriptNote = "排队等待转写…"
         }
-        transcribeQueue.append(item.id)
+        transcribeQueue.append(.queueItem(item.id))
         runTranscribeNext()
     }
 
-    private func runTranscribeNext() {
-        guard transcribeProcess == nil, let nextID = transcribeQueue.first else { return }
-        guard let index = queue.firstIndex(where: { $0.id == nextID }),
-              let path = queue[index].record?.path else {
-            transcribeQueue.removeFirst()
-            runTranscribeNext()
+    func enqueueTranscribeHistory(_ record: DownloadRecord) {
+        // Re-read from history: callers may hold a stale copy.
+        let current = history.first(where: { $0.id == record.id }) ?? record
+        if let existing = current.transcriptPath { openPath(existing); return }
+        guard !transcribingHistory.contains(current.id),
+              !transcribeQueue.contains(.historyItem(current.id)) else { return }
+        guard FileManager.default.fileExists(atPath: current.path) else {
+            historyNotes[current.id] = "文件已被移动或删除"
             return
+        }
+        historyNotes[current.id] = "排队等待转写…"
+        transcribeQueue.append(.historyItem(current.id))
+        runTranscribeNext()
+    }
+
+    /// “转写本地音视频…”：选择不是本应用下载的文件也能转。
+    func chooseLocalVideo() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = [.audiovisualContent]
+        panel.prompt = "转写"
+        guard panel.runModal() == .OK else { return }
+        for url in panel.urls { addLocalFile(url) }
+    }
+
+    private func addLocalFile(_ url: URL) {
+        let path = url.path
+        let testing = CommandLine.arguments.contains("--asr-history-test")
+        if !testing, let record = history.first(where: { $0.path == path }),
+           let existing = record.transcriptPath {
+            openPath(existing)
+            return
+        }
+        if let existing = queue.first(where: { $0.localFile && $0.record?.path == path }) {
+            enqueueTranscribe(existing)
+            return
+        }
+        var item = QueueItem(url: "")
+        item.localFile = true
+        item.state = .done
+        item.title = url.deletingPathExtension().lastPathComponent
+        item.note = "本地音视频"
+        let size = (try? FileManager.default.attributesOfItem(atPath: path)[.size] as? Int64) ?? nil
+        item.record = DownloadRecord(path: path, title: item.title, width: 0, height: 0,
+                                     duration: 0, size: size ?? 0, hasAudio: true)
+        queue.insert(item, at: 0)
+        enqueueTranscribe(item)
+    }
+
+    /// Headless test hook: exercises the history and local-file transcription paths.
+    func runAsrHistoryTest() {
+        // Clear stored links first so both paths run real transcriptions.
+        for record in history.prefix(2) {
+            if let index = history.firstIndex(where: { $0.id == record.id }) {
+                history[index].transcriptPath = nil
+            }
+        }
+        let usable = history.filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard let first = usable.first else {
+            print("DBG-T: no usable history file"); fflush(stdout)
+            return
+        }
+        enqueueTranscribeHistory(first)
+        if usable.count > 1 { addLocalFile(URL(fileURLWithPath: usable[1].path)) }
+    }
+
+    private func markTranscribeStartFailure(_ target: TranscribeTarget, _ text: String) {
+        switch target {
+        case .queueItem(let id):
+            if let index = queue.firstIndex(where: { $0.id == id }) {
+                queue[index].transcribing = false
+                queue[index].transcriptNote = text
+            }
+        case .historyItem(let id):
+            transcribingHistory.remove(id)
+            historyNotes[id] = text
+        }
+    }
+
+    private func runTranscribeNext() {
+        guard transcribeProcess == nil, let target = transcribeQueue.first else { return }
+        let path: String
+        switch target {
+        case .queueItem(let id):
+            guard let index = queue.firstIndex(where: { $0.id == id }),
+                  let recordPath = queue[index].record?.path,
+                  FileManager.default.fileExists(atPath: recordPath) else {
+                transcribeQueue.removeFirst()
+                runTranscribeNext()
+                return
+            }
+            queue[index].transcribing = true
+            queue[index].transcriptNote = "正在加载语音识别模型…"
+            queue[index].fraction = nil
+            path = recordPath
+        case .historyItem(let id):
+            guard let hIndex = history.firstIndex(where: { $0.id == id }),
+                  FileManager.default.fileExists(atPath: history[hIndex].path) else {
+                transcribeQueue.removeFirst()
+                historyNotes[id] = nil
+                runTranscribeNext()
+                return
+            }
+            transcribingHistory.insert(id)
+            historyNotes[id] = "正在加载语音识别模型…"
+            path = history[hIndex].path
         }
         guard let resource = Bundle.main.resourceURL else { return }
         transcribeQueue.removeFirst()
-        queue[index].transcribing = true
-        queue[index].transcriptNote = "正在加载语音识别模型…"
-        queue[index].fraction = nil
-        let itemID = queue[index].id
+        transcribeCurrent = target
         let gen = UUID()
         transcribeGen = gen
         let task = Process()
@@ -423,8 +601,8 @@ final class DownloadModel: ObservableObject {
             try task.run()
             transcribeProcess = task
         } catch {
-            queue[index].transcribing = false
-            queue[index].transcriptNote = "无法启动转写程序：\(error.localizedDescription)"
+            markTranscribeStartFailure(target, "无法启动转写程序：\(error.localizedDescription)")
+            transcribeCurrent = nil
             runTranscribeNext()
             return
         }
@@ -437,57 +615,125 @@ final class DownloadModel: ObservableObject {
                 while let newline = buffer.firstIndex(of: 10) {
                     let line = String(data: buffer[..<newline], encoding: .utf8) ?? ""
                     buffer.removeSubrange(...newline)
-                    DispatchQueue.main.async { self?.receiveTranscribe(line, itemID: itemID, gen: gen) }
+                    DispatchQueue.main.async { self?.receiveTranscribe(line, target: target, gen: gen) }
                 }
             }
             if !buffer.isEmpty {
                 let line = String(data: buffer, encoding: .utf8) ?? ""
-                DispatchQueue.main.async { self?.receiveTranscribe(line, itemID: itemID, gen: gen) }
+                DispatchQueue.main.async { self?.receiveTranscribe(line, target: target, gen: gen) }
             }
             task.waitUntilExit()
             DispatchQueue.main.async {
                 guard let self, self.transcribeGen == gen else { return }
                 self.transcribeProcess = nil
-                if let current = self.queue.firstIndex(where: { $0.id == itemID }),
-                   self.queue[current].transcribing {
-                    self.queue[current].transcribing = false
-                    self.queue[current].transcriptNote = nil
-                    self.queue[current].fraction = 1
-                }
+                let finished = self.transcribeCurrent
+                self.transcribeCurrent = nil
+                if let finished { self.clearStuckTranscribeState(finished) }
                 self.runTranscribeNext()
             }
         }
     }
 
-    private func receiveTranscribe(_ line: String, itemID: UUID, gen: UUID) {
-        if CommandLine.arguments.contains("--auto-start") { print("DBG-T:", line); fflush(stdout) }
-        guard transcribeGen == gen, let index = queue.firstIndex(where: { $0.id == itemID }) else { return }
+    private func clearStuckTranscribeState(_ target: TranscribeTarget) {
+        switch target {
+        case .queueItem(let id):
+            if let index = queue.firstIndex(where: { $0.id == id }), queue[index].transcribing {
+                queue[index].transcribing = false
+                queue[index].transcriptNote = nil
+                queue[index].fraction = 1
+            }
+        case .historyItem(let id):
+            if transcribingHistory.contains(id) {
+                transcribingHistory.remove(id)
+                historyNotes[id] = nil
+            }
+        }
+    }
+
+    private func receiveTranscribe(_ line: String, target: TranscribeTarget, gen: UUID) {
+        if CommandLine.arguments.contains("--auto-start") || CommandLine.arguments.contains("--asr-history-test") {
+            print("DBG-T:", line); fflush(stdout)
+        }
+        guard transcribeGen == gen else { return }
         guard let data = line.data(using: .utf8),
               let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let event = message["event"] as? String else {
             if !line.isEmpty { addLog(line) }
             return
         }
+        var qIndex: Int? = nil
+        if case .queueItem(let id) = target {
+            guard let found = queue.firstIndex(where: { $0.id == id }) else { return }
+            qIndex = found
+        }
+        var hIndex: Int? = nil
+        if case .historyItem(let id) = target {
+            guard let found = history.firstIndex(where: { $0.id == id }) else { return }
+            hIndex = found
+        }
         switch event {
         case "state":
-            queue[index].transcriptNote = message["text"] as? String
+            let text = message["text"] as? String
+            if let qIndex { queue[qIndex].transcriptNote = text }
+            if let hIndex { historyNotes[history[hIndex].id] = text }
         case "progress":
-            queue[index].fraction = (message["fraction"] as? NSNumber)?.doubleValue
+            if let qIndex { queue[qIndex].fraction = (message["fraction"] as? NSNumber)?.doubleValue }
         case "log":
             addLog(message["text"] as? String ?? "")
         case "transcribed":
-            queue[index].transcriptPath = message["path"] as? String
-            queue[index].transcriptNote = "文字稿已生成"
-            queue[index].transcribing = false
-            queue[index].fraction = 1
+            let transcript = message["path"] as? String
+            if let qIndex {
+                queue[qIndex].transcriptPath = transcript
+                queue[qIndex].transcriptNote = "文字稿已生成"
+                queue[qIndex].transcribing = false
+                queue[qIndex].fraction = 1
+                if queue[qIndex].localFile, let transcript {
+                    // Adopt local files into history with fresh probe metadata.
+                    var record = DownloadRecord(
+                        path: queue[qIndex].record!.path, title: queue[qIndex].title,
+                        width: message["width"] as? Int ?? 0,
+                        height: message["height"] as? Int ?? 0,
+                        duration: message["duration"] as? Double ?? 0,
+                        size: (message["size"] as? NSNumber)?.int64Value ?? queue[qIndex].record!.size,
+                        hasAudio: message["hasAudio"] as? Bool ?? true)
+                    record.transcriptPath = transcript
+                    queue[qIndex].record = record
+                    history.removeAll { $0.path == record.path }
+                    history.insert(record, at: 0)
+                    history = Array(history.prefix(30))
+                    saveHistory()
+                } else if let hi = history.firstIndex(where: { $0.path == queue[qIndex].record?.path }) {
+                    history[hi].transcriptPath = transcript
+                    saveHistory()
+                }
+            }
+            if let hIndex {
+                history[hIndex].transcriptPath = transcript
+                saveHistory()
+                transcribingHistory.remove(history[hIndex].id)
+                historyNotes[history[hIndex].id] = nil
+            }
         case "error":
-            queue[index].transcribing = false
-            queue[index].transcriptNote = message["text"] as? String ?? "转写失败"
-            queue[index].fraction = 1
+            let text = message["text"] as? String ?? "转写失败"
+            if let qIndex {
+                queue[qIndex].transcribing = false
+                queue[qIndex].transcriptNote = text
+                queue[qIndex].fraction = 1
+            }
+            if let hIndex {
+                transcribingHistory.remove(history[hIndex].id)
+                historyNotes[history[hIndex].id] = text
+            }
         case "cancelled":
-            queue[index].transcribing = false
-            queue[index].transcriptNote = nil
-            queue[index].fraction = 1
+            if let qIndex {
+                queue[qIndex].transcribing = false
+                queue[qIndex].transcriptNote = nil
+                queue[qIndex].fraction = 1
+            }
+            if let hIndex {
+                transcribingHistory.remove(history[hIndex].id)
+                historyNotes[history[hIndex].id] = nil
+            }
         default:
             break
         }
@@ -585,6 +831,7 @@ private let accentTile = LinearGradient(colors: [teal, sky], startPoint: .topLea
 struct DownloadWindow: View {
     @ObservedObject var model: DownloadModel
     @FocusState private var linkFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 0) {
@@ -626,6 +873,10 @@ struct DownloadWindow: View {
             if CommandLine.arguments.contains("--auto-start") {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1) { model.start() }
             }
+            // Headless test for history/local-file transcription paths.
+            if CommandLine.arguments.contains("--asr-history-test") {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { model.runAsrHistoryTest() }
+            }
         }
     }
 
@@ -664,17 +915,7 @@ struct DownloadWindow: View {
                 ScrollView {
                     VStack(spacing: 7) {
                         ForEach(model.history) { item in
-                            Button { model.reveal(item) } label: {
-                                HStack(alignment: .top, spacing: 9) {
-                                    Image(systemName: "film.fill").foregroundColor(teal).padding(.top, 2)
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(item.title).font(.system(size: 11, weight: .medium)).lineLimit(2).multilineTextAlignment(.leading)
-                                        Text(item.details).font(.system(size: 9, design: .monospaced)).foregroundColor(quiet).lineLimit(1)
-                                    }
-                                    Spacer(minLength: 0)
-                                }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(card, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-                            }.buttonStyle(.plain).help("在 Finder 中显示")
+                            historyCard(item)
                         }
                     }
                 }
@@ -696,11 +937,52 @@ struct DownloadWindow: View {
 
     // MARK: Header
 
+    private func historyCard(_ item: DownloadRecord) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .top, spacing: 9) {
+                Image(systemName: "film.fill").foregroundColor(teal).padding(.top, 2)
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(item.title).font(.system(size: 11, weight: .medium)).lineLimit(2).multilineTextAlignment(.leading)
+                    Text(item.details).font(.system(size: 9, design: .monospaced)).foregroundColor(quiet).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+            }
+            HStack(spacing: 6) {
+                historyButton("play.fill", "播放") { model.open(item) }
+                historyButton("folder", "在 Finder 中显示") { model.reveal(item) }
+                if model.transcribingHistory.contains(item.id) {
+                    ProgressView().controlSize(.small)
+                        .frame(width: 24, height: 24)
+                } else if let transcript = item.transcriptPath {
+                    historyButton("doc.text.fill", "打开文字稿") { model.openPath(transcript) }
+                } else {
+                    historyButton("doc.text", "生成文字稿（本地语音转写）") { model.enqueueTranscribeHistory(item) }
+                }
+            }
+            if let note = model.historyNotes[item.id] {
+                Text(note)
+                    .font(.system(size: 9))
+                    .foregroundColor(item.transcriptPath != nil ? mint : (model.transcribingHistory.contains(item.id) ? teal : danger))
+                    .lineLimit(2)
+            }
+        }
+        .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+        .background(card, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .shadow(color: .black.opacity(0.04), radius: 5, y: 2)
+    }
+
+    private func historyButton(_ symbol: String, _ help: String, action: @escaping () -> Void) -> some View {
+        HoverIconButton(symbol: symbol, help: help, size: 24, action: action)
+    }
+
+    // MARK: Header
+
     private var header: some View {
         HStack(alignment: .bottom) {
             VStack(alignment: .leading, spacing: 8) {
                 Text("把喜欢的视频，留在身边。")
                     .font(.system(size: 26, weight: .bold, design: .rounded))
+                    .tracking(-0.3)
                 Text("粘贴链接或整段分享文案，批量下载交给它。")
                     .font(.system(size: 13)).foregroundColor(quiet)
             }
@@ -736,11 +1018,11 @@ struct DownloadWindow: View {
                 if !model.input.isEmpty {
                     Button { model.input = "" } label: {
                         Label("清空", systemImage: "xmark.circle").font(.system(size: 11, weight: .medium))
-                    }.buttonStyle(.plain).foregroundColor(quiet)
+                    }.buttonStyle(PressableStyle()).foregroundColor(quiet)
                 }
                 Button { model.paste() } label: {
                     Label("粘贴", systemImage: "doc.on.clipboard").font(.system(size: 11, weight: .medium))
-                }.buttonStyle(.plain).foregroundColor(teal)
+                }.buttonStyle(PressableStyle()).foregroundColor(teal)
             }
             ZStack(alignment: .topLeading) {
                 if model.input.isEmpty {
@@ -788,6 +1070,7 @@ struct DownloadWindow: View {
         .padding(20)
         .background(card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(cardBorder, lineWidth: 1))
+        .shadow(color: .black.opacity(0.05), radius: 10, y: 3)
     }
 
     // MARK: Settings
@@ -811,14 +1094,20 @@ struct DownloadWindow: View {
                     .font(.system(size: 12, design: .monospaced)).foregroundColor(quiet).lineLimit(1).truncationMode(.middle).help(model.output)
                 Spacer(minLength: 0)
                 Button("更改…") { model.chooseOutput() }
-                    .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundColor(teal)
+                    .buttonStyle(PressableStyle()).font(.system(size: 11, weight: .medium)).foregroundColor(teal)
             }
             Toggle("使用 Chrome 登录状态", isOn: $model.chromeCookies)
                 .toggleStyle(.checkbox).font(.system(size: 11)).foregroundColor(quiet)
                 .help("当网站要求登录时，允许 yt-dlp 读取 Chrome Cookie。")
-            Toggle("下载后自动生成文字稿", isOn: $model.autoTranscribe)
-                .toggleStyle(.checkbox).font(.system(size: 11)).foregroundColor(quiet)
-                .help("用本机语音识别（Qwen3-ASR）把视频语音转成 Markdown 文字稿，保存在视频旁边。")
+            HStack {
+                Toggle("下载后自动生成文字稿", isOn: $model.autoTranscribe)
+                    .toggleStyle(.checkbox).font(.system(size: 11)).foregroundColor(quiet)
+                    .help("用本机语音识别（Qwen3-ASR）把视频语音转成 Markdown 文字稿，保存在视频旁边。")
+                Spacer(minLength: 0)
+                Button("转写本地音视频…") { model.chooseLocalVideo() }
+                    .buttonStyle(PressableStyle()).font(.system(size: 11, weight: .medium)).foregroundColor(teal)
+                    .help("选择这台 Mac 上的视频或音频文件，直接转成 Markdown 文字稿")
+            }
         }.padding(.horizontal, 3)
     }
 
@@ -844,10 +1133,10 @@ struct DownloadWindow: View {
                             in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .shadow(color: model.detected.isEmpty ? .clear : teal.opacity(0.3), radius: 12, y: 4)
             }
-            .buttonStyle(.plain).keyboardShortcut(.return, modifiers: .command)
+            .buttonStyle(PressableStyle()).keyboardShortcut(.return, modifiers: .command)
             .disabled(model.detected.isEmpty)
             if model.isBusy || model.waitingCount > 0 {
-                Button("全部取消") { model.cancelAll() }.buttonStyle(.plain)
+                Button("全部取消") { model.cancelAll() }.buttonStyle(PressableStyle())
                     .font(.system(size: 12)).foregroundColor(quiet)
             }
         }
@@ -863,14 +1152,16 @@ struct DownloadWindow: View {
                 Spacer()
                 if model.doneCount + model.failedCount > 0 {
                     Button("清空已完成") { model.clearFinished() }
-                        .buttonStyle(.plain).font(.system(size: 11, weight: .medium)).foregroundColor(quiet)
+                        .buttonStyle(PressableStyle()).font(.system(size: 11, weight: .medium)).foregroundColor(quiet)
                 }
             }
             VStack(spacing: 9) {
                 ForEach(model.queue) { item in
                     QueueCard(item: item, model: model)
+                        .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .top)))
                 }
             }
+            .animation(reduceMotion ? nil : .spring(response: 0.35, dampingFraction: 1.0), value: model.queue.count)
         }
     }
 
@@ -945,9 +1236,9 @@ struct QueueCard: View {
                                 .font(.system(size: 11, weight: .bold)).foregroundColor(.white)
                                 .padding(.horizontal, 12).padding(.vertical, 6)
                                 .background(accent, in: Capsule())
-                        }.buttonStyle(.plain)
+                        }.buttonStyle(PressableStyle())
                         Button("跳过") { model.skip(item) }
-                            .buttonStyle(.plain).font(.system(size: 11)).foregroundColor(quiet)
+                            .buttonStyle(PressableStyle()).font(.system(size: 11)).foregroundColor(quiet)
                     }.padding(.top, 2)
                 }
             }
@@ -958,6 +1249,7 @@ struct QueueCard: View {
         .background(card, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous)
             .stroke(item.state == .working ? sky.opacity(0.35) : cardBorder, lineWidth: 1))
+        .shadow(color: .black.opacity(0.04), radius: 6, y: 2)
     }
 
     @ViewBuilder
@@ -996,11 +1288,7 @@ struct QueueCard: View {
     }
 
     private func iconButton(_ symbol: String, _ help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol).font(.system(size: 11, weight: .semibold))
-                .foregroundColor(quiet).frame(width: 28, height: 28)
-                .background(Color.black.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        }.buttonStyle(.plain).help(help)
+        HoverIconButton(symbol: symbol, help: help, action: action)
     }
 }
 
@@ -1008,6 +1296,7 @@ struct QueueCard: View {
 
 struct ProgressBar: View {
     let fraction: Double?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         GeometryReader { geo in
@@ -1016,7 +1305,8 @@ struct ProgressBar: View {
                 if let fraction {
                     Capsule().fill(accent)
                         .frame(width: max(6, geo.size.width * CGFloat(fraction)))
-                        .animation(.easeOut(duration: 0.25), value: fraction)
+                        // Critically damped spring: smooth, no overshoot (Apple default)
+                        .animation(reduceMotion ? nil : .spring(response: 0.3, dampingFraction: 1.0), value: fraction)
                 } else {
                     IndeterminateFill(width: geo.size.width)
                 }
@@ -1028,14 +1318,15 @@ struct ProgressBar: View {
 
 private struct IndeterminateFill: View {
     let width: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var phase = false
 
     var body: some View {
         Capsule().fill(accent)
             .frame(width: max(30, width * 0.28))
-            .offset(x: phase ? width * 0.72 : 0)
-            .animation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: phase)
-            .onAppear { phase = true }
+            .offset(x: reduceMotion ? width * 0.36 : (phase ? width * 0.72 : 0))
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true), value: phase)
+            .onAppear { if !reduceMotion { phase = true } }
     }
 }
 
