@@ -10,13 +10,14 @@
 - 普通网站使用应用内的 yt-dlp 源码下载。
 - 抖音直接下载失败时，自动通过 Ego Lite 浏览器读取同一视频页面提供的 MP4 地址。同一批队列里的连续抖音下载复用同一个浏览器标签（下完批量统一关闭），第二条起明显更快。需要用户登录、验证或接管时会暂停队列；处理后点击该条目的“继续下载”。
 - B站清晰度以网站实际提供的为准：选择了高清晰度但实际到手的文件更低时，完成条目会标注实际分辨率，并提示可勾选“使用 Chrome 登录状态”解锁。
+- 语音转文字稿：下载完成的条目可点「生成文字稿」，用本机 Qwen3-ASR（asr_subtitle 工具，离线运行）把视频语音转成 Markdown，保存在视频旁边；也可在设置里勾选「下载后自动生成文字稿」。转写与下载队列并行，批量下载会排队逐个转写。
 - “使用 Chrome 登录状态”默认关闭。仅在勾选时读取本机 Chrome Cookie，Cookie 不会另存成文件；读取失败（如 Chrome 未运行过或数据库被占用）时自动改为不携带登录状态重试，不会导致下载失败。
 - 历史记录和保存目录只存放在本机的应用偏好设置中。
 - 清晰度以网站提供的文件为准，不做分辨率放大。
 
 ## 在自己的 Mac 构建
 
-需要 macOS 13 或更新版本、Xcode（仅 Command Line Tools 无法编译 SwiftUI 宏）、Python 3.11+、ffmpeg。抖音浏览器下载额外需要已安装并可用的 `ego-browser`（Ego Lite）。本项目不安装或接管浏览器。
+需要 macOS 13 或更新版本、Xcode（仅 Command Line Tools 无法编译 SwiftUI 宏）、Python 3.11+、ffmpeg。抖音浏览器下载额外需要已安装并可用的 `ego-browser`（Ego Lite）。语音转文字稿额外需要 `asr_subtitle` 工具及其模型（默认位于 `~/Documents/Work/linxu/asr_subtitle`）。本项目不安装或接管浏览器。
 
 ```bash
 brew install python ffmpeg
@@ -31,7 +32,7 @@ open 'desktop/dist/林序下载器.app'
 ## 开发
 
 - `DownloadApp.swift`：原生 SwiftUI 浅色窗口、批量下载队列、进度和历史记录。
-- `worker.py`：链接清洗（`extract_urls`）、参数校验、JSON 事件、yt-dlp 下载和文件检查。
+- `worker.py`：链接清洗（`extract_urls`）、参数校验、JSON 事件、yt-dlp 下载和文件检查；`--transcribe <视频>` 模式调用本机 asr_subtitle（默认 `~/Documents/Work/linxu/asr_subtitle`，可用环境变量 `ASR_SUBTITLE_HOME` 覆盖）生成 Markdown 文字稿（同名 `.md`，已存在则加序号）。
 - `douyin.js`：Ego Lite 浏览器读取及抖音文件下载。配置随脚本注入，不经过浏览器服务的环境变量（那里的 env 是常驻的，会在批量下载时串任务）。`keepSpace` 开启时下载成功后保留任务空间（发出 `spaceKept` 事件）供队列中下一条抖音复用；应用侧在队列排空、全部取消或退出时通过 `worker.py --close-space <id>` 统一关闭。被用户接管（handOff）的空间绝不再复用。
 - `make_icon.swift`：生成应用图标，由 `build.sh` 调用。
 - `build.sh`：构建 `.app`。

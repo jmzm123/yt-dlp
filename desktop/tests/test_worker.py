@@ -79,5 +79,21 @@ class CookieProblemTests(unittest.TestCase):
         self.assertFalse(worker.cookie_problem(['[download] Got error: HTTP 404']))
 
 
+class WrapParagraphsTests(unittest.TestCase):
+    def test_short_text_single_paragraph(self):
+        self.assertEqual(worker.wrap_paragraphs('你好。世界。'), '你好。世界。')
+
+    def test_groups_sentences_by_width(self):
+        paragraphs = worker.wrap_paragraphs('第一句。' * 60, width=120).split('\n\n')
+        self.assertEqual(len(paragraphs), 2)
+        for paragraph in paragraphs:
+            self.assertTrue(paragraph.endswith('。'))
+            self.assertGreaterEqual(len(paragraph), 120)
+
+    def test_english_punctuation_and_empty(self):
+        self.assertEqual(worker.wrap_paragraphs('Hello! World? Yes.'), 'Hello! World? Yes.')
+        self.assertEqual(worker.wrap_paragraphs(''), '')
+
+
 if __name__ == '__main__':
     unittest.main()
