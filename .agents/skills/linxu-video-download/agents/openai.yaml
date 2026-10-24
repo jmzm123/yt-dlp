@@ -1,0 +1,4 @@
+interface:
+  display_name: "林序视频下载"
+  short_description: "使用本机林序下载器下载视频，支持分享文案、批量链接和抖音兜底"
+  default_prompt: "使用 $linxu-video-download 把这些视频下载到当前任务的素材目录，并检查实际清晰度和下载结果。"
