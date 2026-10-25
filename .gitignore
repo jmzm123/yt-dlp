@@ -132,3 +132,18 @@ yt-dlp-plugins
 
 # Packages
 yt_dlp_ejs/
+
+# Local credentials and private configuration
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+cookies.json
+*cookies*.json
+credentials.json
+credentials.*.json
+*.p12
+*.pfx
+id_rsa
+id_ed25519

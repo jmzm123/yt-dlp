@@ -44,7 +44,7 @@ python3 -m unittest discover -s desktop/tests -v
 python3 desktop/worker.py --url '视频链接' --output "$HOME/Downloads"
 ```
 
-无头冒烟测试：`林序下载器.app/Contents/MacOS/LinxuDownloader --ui-test --auto-start` 会预填示例乱文案并自动开始真实批量下载（事件打印到 stdout，前缀 `DBG:`；转写事件前缀 `DBG-T:`）。`--asr-history-test` 则只跑历史记录转写与本地文件转写两条路径（要求历史记录里有文件尚存的条目）。
+无头冒烟测试：`林序下载器.app/Contents/MacOS/LinxuDownloader --ui-test --auto-start` 从环境变量 `LINXU_UI_TEST_INPUT` 读取测试链接或分享文案并自动开始真实批量下载；未设置时输入为空，不发起下载。测试输入请在本机临时提供，不要提交进仓库（事件打印到 stdout，前缀 `DBG:`；转写事件前缀 `DBG-T:`）。`--asr-history-test` 则只跑历史记录转写与本地文件转写两条路径（要求历史记录里有文件尚存的条目）。
 
 在 `macos-gui` 分支开发。`origin` 指向个人仓库，`upstream` 指向 `yt-dlp/yt-dlp`。
 

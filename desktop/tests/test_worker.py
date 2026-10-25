@@ -31,7 +31,7 @@ class InputTests(unittest.TestCase):
 
 
 class BatchExtractTests(unittest.TestCase):
-    def test_real_douyin_share_text(self):
+    def test_synthetic_douyin_share_text(self):
         text = ('3.87 :9pm X@x.xx abc:/ 01/01 示例视频标题 # 示例 # 测试  '
                 'https://v.douyin.com/example/ 复制此链接，打开Dou音搜索，直接观看视频！')
         self.assertEqual(worker.extract_urls(text), ['https://v.douyin.com/example/'])
@@ -44,7 +44,7 @@ class BatchExtractTests(unittest.TestCase):
 
     def test_multiple_links_mixed_text(self):
         text = ('第一个 https://v.douyin.com/abc/ 复制打开抖音；\n'
-                '【猫和老鼠】 https://www.bilibili.com/video/BV_EXAMPLE/?spm_id_from=333.337 哔哩哔哩\n'
+                '【示例视频】 https://www.bilibili.com/video/BV_EXAMPLE/?spm_id_from=333.337 哔哩哔哩\n'
                 '再来一遍 https://v.douyin.com/abc/ 和 https://youtu.be/EXAMPLE_ID。')
         self.assertEqual(worker.extract_urls(text), [
             'https://v.douyin.com/abc/',
